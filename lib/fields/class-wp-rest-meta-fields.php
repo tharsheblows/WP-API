@@ -123,7 +123,8 @@ abstract class WP_REST_Meta_Fields {
 	 * @return bool|WP_Error True if meta field is deleted, error otherwise.
 	 */
 	protected function delete_meta_value( $object, $name ) {
-		if ( ! current_user_can( 'delete_post_meta', $object, $name ) ) {
+		$object_type = $this->get_rest_field_type();
+		if ( ! current_user_can( "delete_{$object_type}_meta", $object, $name ) ) {
 			return new WP_Error(
 				'rest_cannot_delete',
 				sprintf( __( 'You do not have permission to edit the %s custom field.' ), $name ),
@@ -153,7 +154,8 @@ abstract class WP_REST_Meta_Fields {
 	 * @return bool|WP_Error True if meta fields are updated, error otherwise.
 	 */
 	protected function update_multi_meta_value( $object, $name, $values ) {
-		if ( ! current_user_can( 'edit_post_meta', $object, $name ) ) {
+		$object_type = $this->get_rest_field_type();
+		if ( ! current_user_can( "edit_{$object_type}_meta", $object, $name ) ) {
 			return new WP_Error(
 				'rest_cannot_update',
 				sprintf( __( 'You do not have permission to edit the %s custom field.' ), $name ),
@@ -214,7 +216,8 @@ abstract class WP_REST_Meta_Fields {
 	 * @return bool|WP_Error True if meta field is updated, error otherwise.
 	 */
 	protected function update_meta_value( $object, $name, $value ) {
-		if ( ! current_user_can( 'edit_post_meta', $object, $name ) ) {
+		$object_type = $this->get_rest_field_type();
+		if ( ! current_user_can( "edit_{$object_type}_meta", $object, $name ) ) {
 			return new WP_Error(
 				'rest_cannot_update',
 				sprintf( __( 'You do not have permission to edit the %s custom field.' ), $name ),
