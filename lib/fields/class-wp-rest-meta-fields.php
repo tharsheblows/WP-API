@@ -276,24 +276,36 @@ abstract class WP_REST_Meta_Fields {
 				'type'        => null,
 				'description' => empty( $args['description'] ) ? '' : $args['description'],
 				'default'     => isset( $args['default'] ) ? $args['default'] : null,
+				'items'		  => array()
 			);
+
 			$rest_args = array_merge( $default_args, $rest_args );
 			$rest_args['schema'] = array_merge( $default_schema, $rest_args['schema'] );
-
+			
 			if ( empty( $rest_args['schema']['type'] ) ) {
 				// Skip over meta fields that don't have a defined type.
 				if ( empty( $args['type'] ) ) {
 					continue;
 				}
 
-				if ( $rest_args['single'] ) {
-					$rest_args['schema']['type'] = $args['type'];
-				} else {
-					$rest_args['schema']['type'] = 'array';
-					$rest_args['schema']['items'] = array(
-						'type' => $args['type'],
-					);
+				$rest_args['schema']['type'] = $args['type'];
+			}
+
+			// if this is a meta key which is allowed to have multiple values, the type will be array and everything will move down one level
+			if( empty( $rest_args['single'] ) ){
+
+				if( !empty( $rest_args['schema']['type'] ) ){
+
+					$new_items = $rest_args['schema'];
+					unset( $new_items['description'] );
+					unset( $new_items['default'] );
+					$rest_args['schema']['items'] = $new_items;
+					if( !empty( $rest_args['schema']['properties'] ) ){
+						unset( $rest_args['schema']['properties'] );
+					}
 				}
+
+				$rest_args['schema']['type'] = 'array';
 			}
 
 			$registered[ $rest_args['name'] ] = $rest_args;
@@ -320,8 +332,8 @@ abstract class WP_REST_Meta_Fields {
 		foreach ( $fields as $key => $args ) {
 			$schema['properties'][ $key ] = $args['schema'];
 		}
-
 		return $schema;
+
 	}
 
 	/**
@@ -335,31 +347,201 @@ abstract class WP_REST_Meta_Fields {
 	 * @param array           $args    REST-specific options for the meta key.
 	 * @return mixed Value prepared for output.
 	 */
-	public static function prepare_value( $value, $request, $args ) {
-		$type = $args['schema']['type'];
-
-		// For multi-value fields, check the item type instead.
-		if ( 'array' === $type && ! empty( $args['schema']['items']['type'] ) ) {
-			$type = $args['schema']['items']['type'];
+	public function prepare_value( $value, $request, $args ) {
+		
+		// Don't allow non stdClass objects to be output.
+		if ( is_object( $value ) && ! ( $value instanceof stdClass ) ) {
+			return array( 'error' => 'Objects may only be stdClass objects.');
 		}
 
-		switch ( $type ) {
-			case 'string':
-				$value = strval( $value );
-				break;
-			case 'number':
-				$value = floatval( $value );
-				break;
-			case 'boolean':
-				$value = (bool) $value;
-				break;
-		}
+		if( empty( $args['single'] ) ){
+			$type =  'array';
 
-		// Don't allow objects to be output.
-		if ( is_object( $value ) && ! ( $value instanceof JsonSerializable ) ) {
-			return null;
-		}
+		} elseif( !empty( $args['schema']['type'] ) ){
+			$type = $args['schema']['type'];
+
+		} elseif( is_array( $value ) && $this->is_json_array( $value ) ){
+			$type = 'array';
+
+		} elseif ( ( is_array( $value ) && ! $this->is_json_array( $value ) ) || (  is_object( $value ) && ( $value instanceof stdClass ) ) ) { // Is this an associative array or a stdClass object
+			$type = 'object';
+
+		} else {
+			$type = 'string';
+
+		};
+
+		$value = $this->validate_value( $value, $type, $args['schema'] );
 
 		return $value;
 	}
+
+	/**
+	 * Validate a value for output
+	 *
+	 * This validates each meta value against its schema. 
+	 *
+	 * @param mixed 	$value   Meta value from the database.
+	 * @param string 	$type    The json type (limited to number, bool, array, object, string)
+	 * @param array 	$schema  The schema to which the value should conform
+	 * @return mixed Value prepared for output.
+	 */
+	public function validate_value( $value, $type = null, $schema ){
+
+		switch ( $type ) {
+			case 'number':
+				$retval = floatval( $value );
+				break;
+			case 'bool':
+				$retval = (bool) $value;
+				break;
+			case 'array':
+				$retval = $this->validate_array( $value, $schema );
+				break;
+			case 'object':
+				$retval = $this->validate_object( $value, $schema );
+				break;
+			case 'string': 
+				$retval = strval( $value );
+				break;
+			default: 
+				// No custom types allowed.
+				$retval = array( 'error' => 'incorrect type used in register_meta()' );
+		}
+
+		return $retval;
+
+	}
+
+	/**
+	 * Validate an array for output
+	 *
+	 * This validates each array against its schema. 
+	 *
+	 * @param mixed 	$array   Array to be validated
+	 * @param array 	$schema  The schema to which the array should conform
+	 * @param array 	$retarray The array being recursively built
+	 * @return array Array prepared for output.
+	 */
+	public function validate_array( $array, $schema, $retarray = array() ){
+
+		// First let's make a new schema to use for the items
+		$new_schema = ( !empty( $schema['items'] ) ) ? $schema['items'] : false;
+
+		// If the items have no declared type, they will be strings
+		$type = ( !empty( $schema['items']['type'] ) ) ? $schema['items']['type'] : 'string';
+
+		if ( ! is_array( $array ) && ! is_object( $array ) ) {
+			// If this is not an array and not an object then a scalar value has snuck its way in. Go to validate_value().
+			return $this->validate_value( $array, $type, $new_schema );
+
+		} elseif ( ! $this->is_json_array( $array ) ) {
+			// If this isn't what json would consider an array, ie if it's an object or an associative array, go to validate_object().
+			$retarray = $this->validate_object( $array, $new_schema );
+
+		} else {
+			// This should be an array with numerical keys. So let's iterate over it.
+			foreach( $array as $value ){
+				
+				if ( $type === 'array' ) {
+					// If it's another array, let's validate that.
+					$retarray[] = $this->validate_array( $value, $new_schema, $retarray );
+
+				}
+				else{
+					// If it's a value, let's validate that.
+					$retarray[] = $this->validate_value( $value, $type, false );
+				}
+			}
+		}
+		// After all that, return the validated array
+		return $retarray;
+	}
+
+	/**
+	 * Validate an object for output
+	 *
+	 * This validates each object against its schema. The word "object" refers to the type in the json schema, not the php type. 
+	 * So in this instance, both associative arrays and objects are objects.
+	 *
+	 * @param mixed 	$object   Meta object from the database.
+	 * @param array 	$schema  The schema to which the object should conform
+	 * @param object 	$retobject The object being recursively built, you will need to pass in an empty array or 
+	 * @return array Array prepared for output.
+	 */
+	public function validate_object( $object, $schema = array(), $retobject = array() ){
+
+		if( is_object( $object ) ){
+			// if it's a php object, check if it's a stdClass object
+			if( $object instanceof stdClass ){
+				// if it's a stdClass object, the return type needs to be an object too
+				$return_type = 'object';
+			}
+			else{
+				// if it's an object but not a stdClass object, bail and return an error
+				return array( 'error' => 'Objects must be stdClass.' );
+			}
+		} elseif ( is_array( $object ) && ! $this->is_json_array( $object ) ){
+				// if it's an array with solely numberical keys, it's going to be a json array
+				$return_type = 'array';
+		}
+		else{
+			return array( 'error' => 'Cannot validate value as an object' );
+		}
+
+		// Ok. Now the validation begins.
+
+		// The schema must have the object's properties.
+		$properties = ( !empty( $schema['properties'] ) ) ? $schema['properties'] : false;
+
+		if( empty( $properties ) ){
+			return array( 'error' => 'Objects must have properties set to validate correctly.' ); // Could be super helpful if we wanted I guess
+		}
+
+		// Casting this might be bad but in the interest of making it work first, here goes.
+		$object = (array)$object;
+
+		foreach( $properties as $key => $value_schema ){
+			if( !empty( $object[$key] ) ){
+
+				// If a type wasn't in the schema it will be a string.
+				$value_type = ( !empty( $value_schema['type'] ) ) ? $value_schema['type'] : 'string';
+
+				// Validate the value
+				$retobject[$key] = $this->validate_value( $object[$key], $value_type, $value_schema );
+
+				// This one's validated, take it out of the array.
+				unset( $object[$key] );
+			}
+			else{
+				return array( 'error' => 'Not all keys in the schema validated in the object.' );
+			}
+		}
+
+		// All of the keys should have been unset. If not, there are keys which were not validated.
+		if( !empty( $object ) ){
+			return array( 'error' => 'The object has keys which are not present in its schema and cannot be validated.' );
+		}
+
+		$retobject = ( $return_type === 'object' ) ? (object) $retobject : (array) $retobject;
+		return $retobject;
+	}
+
+	/**
+	 * Is a value an array with only numeric keys?
+	 *
+	 * This is used to differentiate between associative and numberic arrays. It also returns false if you pass in something that isn't an array.
+	 *
+	 * @param mixed 	$value   The value to check
+	 * @return bool True if it will end up as a json array, false if not.
+	 */
+	public function is_json_array( $value ){
+		if( !is_array( $value ) ){
+			return false;
+		}
+		$is_json_array = ( count( array_filter( array_keys( $value ), 'is_string' ) ) === 0 ) ? true : false;
+		return $is_json_array;
+	}
+
+
 }
