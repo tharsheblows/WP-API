@@ -14,6 +14,30 @@ class WP_REST_Terms_Controller extends WP_REST_Controller {
 	protected $taxonomy;
 
 	/**
+	 * Instance of a term meta fields object.
+	 *
+	 * @access protected
+	 * @var WP_REST_Term_Meta_Fields
+	 */
+	protected $meta;
+
+	/**
+	 * Column to have the terms be sorted by.
+	 *
+	 * @access protected
+	 * @var string
+	 */
+	protected $sort_column;
+
+	/**
+	 * Number of terms that were found.
+	 *
+	 * @access protected
+	 * @var int
+	 */
+	protected $total_terms;
+
+	/**
 	 * Constructor.
 	 *
 	 * @param string $taxonomy Taxonomy key.
@@ -126,7 +150,7 @@ class WP_REST_Terms_Controller extends WP_REST_Controller {
 		// For each known parameter which is both registered and present in the request,
 		// set the parameter's value on the query $prepared_args.
 		foreach ( $parameter_mappings as $api_param => $wp_param ) {
-			if ( isset( $registered[ $api_param ] ) && isset( $request[ $api_param ] ) ) {
+			if ( isset( $registered[ $api_param ], $request[ $api_param ] ) ) {
 				$prepared_args[ $wp_param ] = $request[ $api_param ];
 			}
 		}
@@ -139,7 +163,7 @@ class WP_REST_Terms_Controller extends WP_REST_Controller {
 
 		$taxonomy_obj = get_taxonomy( $this->taxonomy );
 
-		if ( $taxonomy_obj->hierarchical && isset( $registered['parent'] ) && isset( $request['parent'] ) ) {
+		if ( $taxonomy_obj->hierarchical && isset( $registered['parent'], $request['parent'] ) ) {
 			if ( 0 === $request['parent'] ) {
 				// Only query top-level terms.
 				$prepared_args['parent'] = 0;
@@ -371,7 +395,7 @@ class WP_REST_Terms_Controller extends WP_REST_Controller {
 			 * If we're going to inform the client that the term already exists,
 			 * give them the identifier for future use.
 			 */
-			if ( ( $term_id = $term->get_error_data( 'term_exists' ) ) ) {
+			if ( $term_id = $term->get_error_data( 'term_exists' ) ) {
 				$existing_term = get_term( $term_id, $this->taxonomy );
 				$term->add_data( $existing_term->term_id, 'term_exists' );
 			}
